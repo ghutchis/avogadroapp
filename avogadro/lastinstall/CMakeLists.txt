@@ -24,11 +24,14 @@ if((APPLE OR WIN32) AND NOT ${CMAKE_VERSION} VERSION_LESS 2.8.8)
       list(APPEND dirs "${dir}/bin" "${dir}/lib")
     endforeach()
   endif()
-  # The VTK dlls are not in the CMAKE_PREFIX_PATH when built against
-  # a "build tree" of VTK:
-  get_property(loc TARGET vtkChartsCore PROPERTY LOCATION_RELEASE)
-  get_filename_component(vtk_dlls_dir "${loc}" PATH)
-  set(dirs ${dirs} "${vtk_dlls_dir}")
+
+  if(USE_VTK)
+    # The VTK dlls are not in the CMAKE_PREFIX_PATH when built against
+    # a "build tree" of VTK:
+    get_property(loc TARGET vtkChartsCore PROPERTY LOCATION_RELEASE)
+    get_filename_component(vtk_dlls_dir "${loc}" PATH)
+    set(dirs ${dirs} "${vtk_dlls_dir}")
+  endif()
 
   set(plugins "")
   foreach(plugin ${AvogadroLibs_PLUGINS})
@@ -41,10 +44,10 @@ if((APPLE OR WIN32) AND NOT ${CMAKE_VERSION} VERSION_LESS 2.8.8)
   if(INSTALL_BUNDLE_FILES AND OBABEL_EXE AND APPLE)
     get_filename_component(BABEL_DIR "${OBABEL_EXE}" PATH)
     file(GLOB BABEL_PLUGINS
-      RELATIVE ${BABEL_DIR}/../lib/openbabel/2.3.2/
-      ${BABEL_DIR}/../lib/openbabel/2.3.2/*.so)
+      RELATIVE ${BABEL_DIR}/../lib/openbabel/
+      ${BABEL_DIR}/../lib/openbabel/*.so)
     foreach(plugin ${BABEL_PLUGINS})
-      list(APPEND ob_plugins ${INSTALL_LIBRARY_DIR}/openbabel/2.3.2/${plugin})
+      list(APPEND ob_plugins ${INSTALL_LIBRARY_DIR}/openbabel/${plugin})
     endforeach()
   endif()
   include(InstallRequiredSystemLibraries)

@@ -27,7 +27,6 @@
 #include <avogadro/io/fileformat.h>
 #include <avogadro/io/fileformatmanager.h>
 #include <avogadro/qtopengl/glwidget.h>
-#include <avogadro/qtopengl/editglwidget.h>
 #include <avogadro/qtplugins/pluginmanager.h>
 #include <avogadro/qtgui/customelementdialog.h>
 #include <avogadro/qtgui/fileformatdialog.h>
@@ -82,7 +81,9 @@
 # include <molequeue/client/client.h>
 #endif // Avogadro_ENABLE_RPC
 
-#include <avogadro/vtk/vtkglwidget.h>
+#ifdef AVO_USE_VTK
+# include <avogadro/vtk/vtkglwidget.h>
+#endif
 
 namespace Avogadro {
 
@@ -198,10 +199,11 @@ using QtGui::ToolPlugin;
 using QtGui::ToolPluginFactory;
 using QtGui::ExtensionPlugin;
 using QtGui::ExtensionPluginFactory;
-using QtOpenGL::EditGLWidget;
 using QtOpenGL::GLWidget;
-using VTK::vtkGLWidget;
 using QtPlugins::PluginManager;
+#ifdef AVO_USE_VTK
+using VTK::vtkGLWidget;
+#endif
 
 MainWindow::MainWindow(const QStringList &fileNames, bool disableSettings)
   : m_molecule(NULL),
@@ -271,6 +273,9 @@ MainWindow::MainWindow(const QStringList &fileNames, bool disableSettings)
     // Give the plugins 5 seconds before timing out queued files.
     QTimer::singleShot(5000, this, SLOT(clearQueuedFiles()));
   }
+  else {
+    newMolecule();
+  }
 
 #ifdef Avogadro_ENABLE_RPC
   // Wait a few seconds to attempt registering with MoleQueue.
@@ -297,7 +302,7 @@ void MainWindow::setupInterface()
   m_multiViewWidget = new QtGui::MultiViewWidget(this);
   m_multiViewWidget->setFactory(m_viewFactory);
   setCentralWidget(m_multiViewWidget);
-  EditGLWidget *glWidget = new EditGLWidget(this);
+  GLWidget *glWidget = new GLWidget(this);
   m_multiViewWidget->addWidget(glWidget);
 
   // Our tool dock.
@@ -307,16 +312,20 @@ void MainWindow::setupInterface()
   // Our scene/view dock.
   QDockWidget *sceneDock = new QDockWidget(tr("Display Types"), this);
   m_sceneTreeView = new QTreeView(sceneDock);
+  m_sceneTreeView->setIndentation(0);
   sceneDock->setWidget(m_sceneTreeView);
   addDockWidget(Qt::LeftDockWidgetArea, sceneDock);
 
   // Our view dock.
   m_viewDock = new QDockWidget(tr("View Configuration"), this);
   addDockWidget(Qt::LeftDockWidgetArea, m_viewDock);
+  // put display types on top of view config
+  tabifyDockWidget(m_viewDock, sceneDock);
 
   // Our molecule dock.
   QDockWidget *moleculeDock = new QDockWidget(tr("Molecules"), this);
   m_moleculeTreeView = new QTreeView(moleculeDock);
+  m_moleculeTreeView->setIndentation(0);
   moleculeDock->setWidget(m_moleculeTreeView);
   addDockWidget(Qt::LeftDockWidgetArea, moleculeDock);
 
@@ -342,9 +351,13 @@ void MainWindow::setupInterface()
   // Create the molecule model
   m_moleculeModel = new QtGui::MoleculeModel(this);
   m_moleculeTreeView->setModel(m_moleculeModel);
+  m_moleculeTreeView->setSelectionBehavior(QAbstractItemView::SelectRows);
   m_moleculeTreeView->setAlternatingRowColors(true);
-  m_moleculeTreeView->header()->stretchLastSection();
+  m_moleculeTreeView->header()->setStretchLastSection(false);
   m_moleculeTreeView->header()->setVisible(false);
+  m_moleculeTreeView->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+  m_moleculeTreeView->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+  m_moleculeTreeView->header()->resizeSection(1, 30);
   connect(m_moleculeTreeView, SIGNAL(activated(QModelIndex)),
           SLOT(moleculeActivated(QModelIndex)));
 
@@ -406,9 +419,9 @@ void MainWindow::setMolecule(Molecule *mol)
   // If the molecule is empty, make the editor active. Otherwise, use the
   // navigator tool.
   if (m_molecule) {
-    //QString targetToolName = m_molecule->atomCount() > 0 ? "Navigator"
-    //                                                     : "Editor";
-    //setActiveTool(targetToolName);
+    QString targetToolName = m_molecule->atomCount() > 0 ? "Navigator"
+                                                         : "Editor";
+    setActiveTool(targetToolName);
     connect(m_molecule, SIGNAL(changed(uint)), SLOT(markMoleculeDirty()));
   }
 
@@ -425,52 +438,16 @@ void MainWindow::setMolecule(Molecule *mol)
   if (GLWidget *glWidget = qobject_cast<QtOpenGL::GLWidget *>(w)) {
     setWidgetMolecule(glWidget, mol);
   }
-  else if (EditGLWidget *editWidget = qobject_cast<EditGLWidget *>(w)) {
-    RWMolecule *rwMol = new RWMolecule(*mol, this);
-    qDebug() << "rwMol with" << rwMol->atomCount() << "atoms";
-    m_moleculeModel->addItem(rwMol);
-    m_moleculeModel->setActiveMolecule(rwMol);
-    setWidgetMolecule(editWidget, rwMol);
-  }
+#ifdef AVO_USE_VTK
   else if (vtkGLWidget *vtkWidget = qobject_cast<vtkGLWidget *>(w)) {
     setWidgetMolecule(vtkWidget, mol);
   }
-}
-
-void MainWindow::setMolecule(RWMolecule *rwMol)
-{
-  if (!rwMol)
-    return;
-
-  // It will ensure the molecule is unique.
-  m_moleculeModel->addItem(rwMol);
-
-  //emit moleculeChanged(m_molecule);
-  //markMoleculeClean();
-  //updateWindowTitle();
-  m_moleculeModel->setActiveMolecule(rwMol);
-
-  // Check if the molecule needs to update the current one.
-  QWidget *w = m_multiViewWidget->activeWidget();
-  if (GLWidget *glWidget = qobject_cast<QtOpenGL::GLWidget *>(w)) {
-    Molecule *mol = new Molecule(*rwMol, this);
-    m_moleculeModel->addItem(mol);
-    m_moleculeModel->setActiveMolecule(mol);
-    setWidgetMolecule(glWidget, mol);
-  }
-  else if (EditGLWidget *editWidget = qobject_cast<EditGLWidget *>(w)) {
-    setWidgetMolecule(editWidget, rwMol);
-  }
-  else if (vtkGLWidget *vtkWidget = qobject_cast<vtkGLWidget *>(w)) {
-    Molecule *mol = new Molecule(*rwMol, this);
-    m_moleculeModel->addItem(mol);
-    m_moleculeModel->setActiveMolecule(mol);
-    setWidgetMolecule(vtkWidget, mol);
-  }
+#endif
 }
 
 void MainWindow::markMoleculeDirty()
 {
+  activeMoleculeEdited();
   if (!m_moleculeDirty) {
     m_moleculeDirty = true;
     updateWindowTitle();
@@ -711,14 +688,17 @@ void MainWindow::toolActivated()
       if (glWidget->activeTool()) {
         m_toolDock->setWidget(glWidget->activeTool()->toolWidget());
         m_toolDock->setWindowTitle(action->text());
-      }
-    }
-    if (EditGLWidget *editWidget =
-        qobject_cast<EditGLWidget *>(m_multiViewWidget->activeWidget())) {
-      editWidget->setActiveTool(action->data().toString());
-      if (editWidget->activeTool()) {
-        m_toolDock->setWidget(editWidget->activeTool()->toolWidget());
-        m_toolDock->setWindowTitle(action->text());
+
+        // uncheck the toolbar
+        foreach(QAction *barAction, m_toolToolBar->actions()) {
+          if (action->data().toString() != barAction->data().toString())
+            barAction->setChecked(false);
+        }
+        foreach(QAction *barAction, m_editToolBar->actions()) {
+          if (action->data().toString() != barAction->data().toString())
+            barAction->setChecked(false);
+        }
+
       }
     }
   }
@@ -744,10 +724,27 @@ void MainWindow::rendererInvalid()
 void MainWindow::moleculeActivated(const QModelIndex &idx)
 {
   QObject *obj = static_cast<QObject *>(idx.internalPointer());
-  if (Molecule *mol = qobject_cast<Molecule *>(obj))
-    setMolecule(mol);
-  else if (RWMolecule *rwMol = qobject_cast<RWMolecule *>(obj))
-    setMolecule(rwMol);
+  if (Molecule *mol = qobject_cast<Molecule *>(obj)) {
+    if (idx.column() == 0)
+      setMolecule(mol);
+
+    // Deleting a molecule, we must also create a new one if it is the last.
+    if (idx.column() == 1) {
+      if (m_molecule == mol) {
+        QList<Molecule *> molecules = m_moleculeModel->molecules();
+        int molIdx = molecules.indexOf(mol);
+        if (molIdx > 0)
+          setMolecule(molecules[molIdx - 1]);
+        else if (molIdx == 0 && molecules.size() > 1) {
+          setMolecule(molecules[1]);
+        }
+        else {
+          newMolecule();
+        }
+      }
+      m_moleculeModel->removeItem(mol);
+    }
+  }
 }
 
 void MainWindow::sceneItemActivated(const QModelIndex &idx)
@@ -809,7 +806,7 @@ void MainWindow::viewActivated(QWidget *widget)
     m_sceneTreeView->setModel(&glWidget->sceneModel());
     populateTools(glWidget);
 
-    m_editToolBar->setDisabled(true);
+    m_editToolBar->setEnabled(true);
     foreach (ExtensionPlugin *extension, m_extensions) {
       extension->setScene(&glWidget->renderer().scene());
       extension->setCamera(&glWidget->renderer().camera());
@@ -840,48 +837,7 @@ void MainWindow::viewActivated(QWidget *widget)
       m_moleculeModel->setActiveMolecule(m_molecule);
     }
   }
-  else if (EditGLWidget *editWidget = qobject_cast<EditGLWidget *>(widget)) {
-    bool firstRun = populatePluginModel(editWidget->sceneModel(), true);
-    m_sceneTreeView->setModel(&editWidget->sceneModel());
-    populateTools(editWidget);
-
-    m_editToolBar->setDisabled(false);
-
-    if (firstRun) {
-      setActiveTool("Editor");
-      RWMolecule *rwMol = new RWMolecule(this);
-      m_moleculeModel->addItem(rwMol);
-      m_moleculeModel->setActiveMolecule(rwMol);
-      editWidget->setMolecule(rwMol);
-      editWidget->updateScene();
-      m_rwMolecule = rwMol;
-      m_molecule = NULL;
-      connect(&rwMol->undoStack(), SIGNAL(canRedoChanged(bool)),
-              m_redo, SLOT(setEnabled(bool)));
-      connect(&rwMol->undoStack(), SIGNAL(canUndoChanged(bool)),
-              m_undo, SLOT(setEnabled(bool)));
-    }
-    else {
-      m_moleculeModel->setActiveMolecule(editWidget->molecule());
-      // Figure out the active tool - reflect this in the toolbar.
-      ToolPlugin *tool = editWidget->activeTool();
-      if (tool) {
-        QString name = tool->objectName();
-        foreach(QAction *action, m_toolToolBar->actions()) {
-          if (action->data().toString() == name)
-            action->setChecked(true);
-          else
-            action->setChecked(false);
-        }
-      }
-    }
-    if (m_rwMolecule != editWidget->molecule() && editWidget->molecule()) {
-      m_molecule = 0;
-      m_rwMolecule = editWidget->molecule();
-      //emit moleculeChanged(m_rwMolecule);
-      m_moleculeModel->setActiveMolecule(m_rwMolecule);
-    }
-  }
+#ifdef AVO_USE_VTK
   else if (vtkGLWidget *vtkWidget = qobject_cast<vtkGLWidget*>(widget)) {
     bool firstRun = populatePluginModel(vtkWidget->sceneModel());
     m_sceneTreeView->setModel(&vtkWidget->sceneModel());
@@ -902,6 +858,7 @@ void MainWindow::viewActivated(QWidget *widget)
       m_moleculeModel->setActiveMolecule(m_molecule);
     }
   }
+#endif
   updateWindowTitle();
   activeMoleculeEdited();
 }
@@ -940,11 +897,24 @@ void MainWindow::exportGraphics()
     fileName += ".png";
 
   // render it (with alpha channel)
+  Rendering::Scene *scene(NULL);
+  GLWidget *viewWidget(NULL);
+  if ((viewWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget()))) {
+    scene = &viewWidget->renderer().scene();
+  }
+  Vector4ub cColor = scene->backgroundColor();
+  unsigned char alpha = cColor[3];
+  cColor[3] = 0; // 100% transparent for export
+  scene->setBackgroundColor(cColor);
+
   QImage exportImage;
   glWidget->raise();
   glWidget->repaint();
   if (QGLFramebufferObject::hasOpenGLFramebufferObjects()) {
-    exportImage = glWidget->grabFrameBuffer(true);
+    // by using renderPixmap, we can scale the export size arbitrarily
+    unsigned int scale = 2;
+    QPixmap pixmap = glWidget->renderPixmap( glWidget->width()*scale, glWidget->height()*scale );
+    exportImage = pixmap.toImage();
   }
   else {
     QPixmap pixmap = QPixmap::grabWindow(glWidget->winId());
@@ -963,8 +933,12 @@ void MainWindow::exportGraphics()
   if (!exportImage.save(fileName)) {
     QMessageBox::warning(this, tr("Avogadro"),
                          tr("Cannot save file %1.").arg(fileName));
-    return;
   }
+
+  // set the GL widget back to the right background color (i.e., not 100% transparent)
+  cColor[3] = alpha; // previous color
+  scene->setBackgroundColor(cColor);
+  glWidget->repaint();
 }
 
 void MainWindow::reassignCustomElements()
@@ -1149,12 +1123,8 @@ bool MainWindow::saveFileAs(const QString &fileName, Io::FileFormat *writer,
 
   Molecule *mol = qobject_cast<Molecule *>(molObj);
   if (!mol) {
-    RWMolecule *rwMol = qobject_cast<RWMolecule *>(molObj);
-    if (!rwMol) {
-      delete writer;
-      return false;
-    }
-    mol = new Molecule(*rwMol, m_threadedWriter);
+    delete writer;
+    return false;
   }
 
   // Prepare the background thread to write the selected file.
@@ -1202,21 +1172,24 @@ void MainWindow::setActiveTool(QString toolName)
       if (toolPlugin->objectName() == toolName) {
         toolPlugin->activateAction()->triggered();
         glWidget->setActiveTool(toolPlugin);
-      }
-    }
-  }
-  else if (EditGLWidget *editWidget =
-      qobject_cast<EditGLWidget *>(m_multiViewWidget->activeWidget())) {
-    foreach (ToolPlugin *toolPlugin, editWidget->tools()) {
-      if (toolPlugin->objectName() == toolName) {
-        toolPlugin->activateAction()->triggered();
-        editWidget->setActiveTool(toolPlugin);
+
+        // update the settings widget
+        m_toolDock->setWidget(toolPlugin->toolWidget());
+        m_toolDock->setWindowTitle(toolPlugin->activateAction()->text());
       }
     }
   }
 
   if (!toolName.isEmpty()) {
+    // check view tools
     foreach(QAction *action, m_toolToolBar->actions()) {
+      if (action->data().toString() == toolName)
+        action->setChecked(true);
+      else
+        action->setChecked(false);
+    }
+    // check edit tools
+    foreach(QAction *action, m_editToolBar->actions()) {
       if (action->data().toString() == toolName)
         action->setChecked(true);
       else
@@ -1229,14 +1202,18 @@ void MainWindow::setActiveDisplayTypes(QStringList displayTypes)
 {
   ScenePluginModel *scenePluginModel(NULL);
   GLWidget *glWidget(NULL);
+#ifdef AVO_USE_VTK
   VTK::vtkGLWidget *vtkWidget(NULL);
+#endif
   if ((glWidget = qobject_cast<GLWidget *>(m_multiViewWidget->activeWidget()))) {
     scenePluginModel = &glWidget->sceneModel();
   }
+#ifdef AVO_USE_VTK
   else if ((vtkWidget =
            qobject_cast<VTK::vtkGLWidget *>(m_multiViewWidget->activeWidget()))) {
     scenePluginModel = &vtkWidget->sceneModel();
   }
+#endif
 
   foreach (ScenePlugin *scene, scenePluginModel->scenePlugins())
     scene->setEnabled(false);
@@ -1246,24 +1223,26 @@ void MainWindow::setActiveDisplayTypes(QStringList displayTypes)
         scene->setEnabled(true);
   if (glWidget)
     glWidget->updateScene();
+#ifdef AVO_USE_VTK
   else if (vtkWidget)
     vtkWidget->updateScene();
+#endif
 }
 
 void MainWindow::undoEdit()
 {
-  if (m_rwMolecule) {
-    m_rwMolecule->undoStack().undo();
-    m_rwMolecule->emitChanged(Molecule::Atoms | Molecule::Added);
+  if (m_molecule) {
+    m_molecule->undoMolecule()->undoStack().undo();
+    m_molecule->emitChanged(Molecule::Atoms | Molecule::Added);
     activeMoleculeEdited();
   }
 }
 
 void MainWindow::redoEdit()
 {
-  if (m_rwMolecule) {
-    m_rwMolecule->undoStack().redo();
-    m_rwMolecule->emitChanged(Molecule::Atoms | Molecule::Added);
+  if (m_molecule) {
+    m_molecule->undoMolecule()->undoStack().redo();
+    m_molecule->emitChanged(Molecule::Atoms | Molecule::Added);
     activeMoleculeEdited();
   }
 }
@@ -1272,12 +1251,12 @@ void MainWindow::activeMoleculeEdited()
 {
   if (!m_undo || !m_redo)
     return;
-  if (m_rwMolecule) {
-    if (m_rwMolecule->undoStack().canUndo())
+  if (m_molecule) {
+    if (m_molecule->undoMolecule()->undoStack().canUndo())
       m_undo->setEnabled(true);
     else
       m_undo->setEnabled(false);
-    if (m_rwMolecule->undoStack().canRedo())
+    if (m_molecule->undoMolecule()->undoStack().canRedo())
       m_redo->setEnabled(true);
     else
       m_redo->setEnabled(false);
@@ -1292,14 +1271,8 @@ void MainWindow::setBackgroundColor()
 {
   Rendering::Scene *scene(NULL);
   GLWidget *glWidget(NULL);
-  EditGLWidget *editWidget(NULL);
-  if ((glWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget()))) {
+  if ((glWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget())))
     scene = &glWidget->renderer().scene();
-  }
-  else if ((editWidget =
-           qobject_cast<EditGLWidget*>(m_multiViewWidget->activeWidget()))) {
-    scene = &editWidget->renderer().scene();
-  }
   if (scene) {
     Vector4ub cColor = scene->backgroundColor();
     QColor qtColor(cColor[0], cColor[1], cColor[2], cColor[3]);
@@ -1312,8 +1285,6 @@ void MainWindow::setBackgroundColor()
       scene->setBackgroundColor(cColor);
       if (glWidget)
         glWidget->updateGL();
-      else if (editWidget)
-        editWidget->updateGL();
     }
   }
 }
@@ -1322,20 +1293,12 @@ void MainWindow::setProjectionPerspective()
 {
   Rendering::GLRenderer *renderer(NULL);
   GLWidget *glWidget(NULL);
-  EditGLWidget *editWidget(NULL);
-  if ((glWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget()))) {
+  if ((glWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget())))
     renderer = &glWidget->renderer();
-  }
-  else if ((editWidget =
-           qobject_cast<EditGLWidget*>(m_multiViewWidget->activeWidget()))) {
-    renderer = &editWidget->renderer();
-  }
   if (renderer) {
     renderer->camera().setProjectionType(Rendering::Perspective);
     if (glWidget)
       glWidget->updateGL();
-    else if (editWidget)
-      editWidget->updateGL();
   }
 }
 
@@ -1343,20 +1306,12 @@ void MainWindow::setProjectionOrthographic()
 {
   Rendering::GLRenderer *renderer(NULL);
   GLWidget *glWidget(NULL);
-  EditGLWidget *editWidget(NULL);
-  if ((glWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget()))) {
+  if ((glWidget = qobject_cast<GLWidget*>(m_multiViewWidget->activeWidget())))
     renderer = &glWidget->renderer();
-  }
-  else if ((editWidget =
-           qobject_cast<EditGLWidget*>(m_multiViewWidget->activeWidget()))) {
-    renderer = &editWidget->renderer();
-  }
   if (renderer) {
     renderer->camera().setProjectionType(Rendering::Orthographic);
     if (glWidget)
       glWidget->updateGL();
-    else if (editWidget)
-      editWidget->updateGL();
   }
 }
 
@@ -1510,6 +1465,11 @@ void MainWindow::buildMenu()
   connect(m_redo, SIGNAL(triggered()), SLOT(redoEdit()));
   m_menuBuilder->addAction(editPath, m_undo, 1);
   m_menuBuilder->addAction(editPath, m_redo, 0);
+
+#ifdef Q_OS_MAC
+  // hide the file toolbar on Mac
+  m_fileToolBar->hide();
+#endif
 
   // View menu
   QStringList viewPath;
